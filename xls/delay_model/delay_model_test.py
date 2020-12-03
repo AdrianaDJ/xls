@@ -147,8 +147,8 @@ class DelayModelTest(absltest.TestCase):
         'operation { op: "kFoo" bit_count: 8 } delay: 810 delay_offset: 10',
         'operation { op: "kFoo" bit_count: 10 } delay: 1010 delay_offset: 10',
     ]
-    result_bit_count = delay_model_pb2.DelayFactor()
-    result_bit_count.source = delay_model_pb2.DelayFactor.Source.RESULT_BIT_COUNT
+    result_bit_count = delay_model_pb2.DelayExpression()
+    result_bit_count.factor.source = delay_model_pb2.DelayFactor.Source.RESULT_BIT_COUNT
     foo = delay_model.RegressionEstimator(
         'kFoo', (result_bit_count,),
         tuple(_parse_data_point(s) for s in data_points_str))
@@ -171,8 +171,8 @@ class DelayModelTest(absltest.TestCase):
     self.assertEqualIgnoringWhitespaceAndFloats(
         foo.cpp_delay_code('node'), r"""
           return std::round(
-              0.0 + 0.0 * node->GetType()->GetFlatBitCount() +
-              0.0 * std::log2(node->GetType()->GetFlatBitCount()));
+              0.0 + 0.0 * static_cast<float>(node->GetType()->GetFlatBitCount()) +
+              0.0 * std::log2(static_cast<float>(node->GetType()->GetFlatBitCount())));
         """)
 
   def test_one_regression_estimator_operand_count(self):
@@ -188,10 +188,10 @@ class DelayModelTest(absltest.TestCase):
         'operation { %s } delay: 12 delay_offset: 0' % gen_operation(4),
         'operation { %s } delay: 13 delay_offset: 0' % gen_operation(8),
     ]
-    result_bit_count = delay_model_pb2.DelayFactor()
-    result_bit_count.source = delay_model_pb2.DelayFactor.Source.OPERAND_COUNT
+    operand_count = delay_model_pb2.DelayExpression()
+    operand_count.factor.source = delay_model_pb2.DelayFactor.Source.OPERAND_COUNT
     foo = delay_model.RegressionEstimator(
-        'kFoo', (result_bit_count,),
+        'kFoo', (operand_count,),
         tuple(_parse_data_point(s) for s in data_points_str))
     self.assertAlmostEqual(
         foo.operation_delay(_parse_operation(gen_operation(1))), 10, delta=1)
@@ -202,8 +202,8 @@ class DelayModelTest(absltest.TestCase):
     self.assertEqualIgnoringWhitespaceAndFloats(
         foo.cpp_delay_code('node'), r"""
           return std::round(
-              0.0 + 0.0 * node->operand_count() +
-              0.0 * std::log2(node->operand_count()));
+              0.0 + 0.0 * static_cast<float>(node->operand_count()) +
+              0.0 * std::log2(static_cast<float>(node->operand_count())));
         """)
 
   def test_two_factor_regression_estimator(self):
@@ -220,11 +220,11 @@ class DelayModelTest(absltest.TestCase):
         'operation { %s } delay: 200 delay_offset: 0' % gen_operation(10, 12),
         'operation { %s } delay: 400 delay_offset: 0' % gen_operation(30, 15),
     ]
-    result_bit_count = delay_model_pb2.DelayFactor()
-    result_bit_count.source = delay_model_pb2.DelayFactor.Source.RESULT_BIT_COUNT
-    operand_bit_count = delay_model_pb2.DelayFactor()
-    operand_bit_count.source = delay_model_pb2.DelayFactor.Source.OPERAND_BIT_COUNT
-    operand_bit_count.operand_number = 1
+    result_bit_count = delay_model_pb2.DelayExpression()
+    result_bit_count.factor.source = delay_model_pb2.DelayFactor.Source.RESULT_BIT_COUNT
+    operand_bit_count = delay_model_pb2.DelayExpression()
+    operand_bit_count.factor.source = delay_model_pb2.DelayFactor.Source.OPERAND_BIT_COUNT
+    operand_bit_count.factor.operand_number = 1
     foo = delay_model.RegressionEstimator(
         'kFoo', (result_bit_count, operand_bit_count),
         tuple(_parse_data_point(s) for s in data_points_str))
@@ -243,10 +243,10 @@ class DelayModelTest(absltest.TestCase):
     self.assertEqualIgnoringWhitespaceAndFloats(
         foo.cpp_delay_code('node'), r"""
           return std::round(
-              0.0 + 0.0 * node->GetType()->GetFlatBitCount() +
-              0.0 * std::log2(node->GetType()->GetFlatBitCount()) +
-              0.0 * node->operand(1)->GetType()->GetFlatBitCount() +
-              0.0 * std::log2(node->operand(1)->GetType()->GetFlatBitCount()));
+              0.0 + 0.0 * static_cast<float>(node->GetType()->GetFlatBitCount()) +
+              0.0 * std::log2(static_cast<float>(node->GetType()->GetFlatBitCount())) +
+              0.0 * static_cast<float>(node->operand(1)->GetType()->GetFlatBitCount()) +
+              0.0 * std::log2(static_cast<float>(node->operand(1)->GetType()->GetFlatBitCount())));
         """)
 
   def test_fixed_op_model(self):
@@ -288,6 +288,326 @@ class DelayModelTest(absltest.TestCase):
           }
         """)
 
+  def test_regression_estimator_binop_delay_expression_add(self):
+    def gen_operation(result_bit_count, operand_bit_count):
+      return 'op: "kFoo" bit_count: %d operands { } operands { bit_count: %d }' % (
+          result_bit_count, operand_bit_count)
+
+    data_points_str = [
+        'operation { %s } delay: 3   delay_offset: 0' % gen_operation(1, 2),
+        'operation { %s } delay: 5   delay_offset: 0' % gen_operation(4, 1),
+        'operation { %s } delay: 10  delay_offset: 0' % gen_operation(4, 6),
+        'operation { %s } delay: 20  delay_offset: 0' % gen_operation(7, 13),
+        'operation { %s } delay: 22  delay_offset: 0' % gen_operation(10, 12),
+        'operation { %s } delay: 45  delay_offset: 0' % gen_operation(30, 15),
+    ]
+    expression = delay_model_pb2.DelayExpression()
+    expression.bin_op = delay_model_pb2.DelayExpression.BinaryOperation.ADD
+    expression.lhs_expression.factor.source = \
+        delay_model_pb2.DelayFactor.Source.RESULT_BIT_COUNT 
+    expression.rhs_expression.factor.source = \
+        delay_model_pb2.DelayFactor.Source.OPERAND_BIT_COUNT 
+    expression.rhs_expression.factor.operand_number = 1
+
+    foo = delay_model.RegressionEstimator(
+        'kFoo', (expression,),
+        tuple(_parse_data_point(s) for s in data_points_str))
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(15, 15))),
+        30,
+        delta=1)
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(45, 20))),
+        65,
+        delta=1)
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(20, 45))),
+        65,
+        delta=1)
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(10, 25))),
+        35,
+        delta=1)
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(100, 250))),
+        350,
+        delta=1)
+
+    expression_str = r"""(static_cast<float>(node->GetType()->GetFlatBitCount())
+        + static_cast<float>(node->operand(1)->GetType()->GetFlatBitCount()))"""
+    self.assertEqualIgnoringWhitespaceAndFloats(
+        foo.cpp_delay_code('node'), r"""
+          return std::round(
+              0.0 + 0.0 * {} +
+              0.0 * std::log2({}));
+        """.format(expression_str, expression_str))
+ 
+
+  def test_regression_estimator_binop_delay_expression_divide(self):
+    def gen_operation(result_bit_count, operand_bit_count):
+      return 'op: "kFoo" bit_count: %d operands { } operands { bit_count: %d }' % (
+          result_bit_count, operand_bit_count)
+
+    data_points_str = [
+        'operation { %s } delay: 5   delay_offset: 0' % gen_operation(10, 2),
+        'operation { %s } delay: 4   delay_offset: 0' % gen_operation(4, 1),
+        'operation { %s } delay: 4  delay_offset: 0' % gen_operation(20, 5),
+        'operation { %s } delay: 7  delay_offset: 0' % gen_operation(49, 7),
+        'operation { %s } delay: 5  delay_offset: 0' % gen_operation(50, 10),
+        'operation { %s } delay: 2  delay_offset: 0' % gen_operation(30, 15),
+    ]
+    expression = delay_model_pb2.DelayExpression()
+    expression.bin_op = delay_model_pb2.DelayExpression.BinaryOperation.DIVIDE
+    expression.lhs_expression.factor.source = \
+        delay_model_pb2.DelayFactor.Source.RESULT_BIT_COUNT 
+    expression.rhs_expression.factor.source = \
+        delay_model_pb2.DelayFactor.Source.OPERAND_BIT_COUNT 
+    expression.rhs_expression.factor.operand_number = 1
+
+    foo = delay_model.RegressionEstimator(
+        'kFoo', (expression,),
+        tuple(_parse_data_point(s) for s in data_points_str))
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(15, 15.0))),
+        1,
+        delta=1)
+    # Note: operation_delay will round to nearest int.
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(45, 20))),
+        2.25,
+        delta=1)
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(20, 45))),
+        0.4444,
+        delta=1)
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(81, 9))),
+        9,
+        delta=1)
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(256, 2))),
+        128,
+        delta=1)
+
+    expression_str = r"""(static_cast<float>(node->GetType()->GetFlatBitCount())
+        / static_cast<float>(node->operand(1)->GetType()->GetFlatBitCount()))"""
+    self.assertEqualIgnoringWhitespaceAndFloats(
+        foo.cpp_delay_code('node'), r"""
+          return std::round(
+              0.0 + 0.0 * {} +
+              0.0 * std::log2({}));
+        """.format(expression_str, expression_str))
+
+  def test_regression_estimator_binop_delay_expression_add(self):
+    def gen_operation(result_bit_count, operand_bit_count):
+      return 'op: "kFoo" bit_count: %d operands { } operands { bit_count: %d }' % (
+          result_bit_count, operand_bit_count)
+
+    data_points_str = [
+        'operation { %s } delay: 1   delay_offset: 0' % gen_operation(1, 2),
+        'operation { %s } delay: 1   delay_offset: 0' % gen_operation(4, 1),
+        'operation { %s } delay: 4  delay_offset: 0' % gen_operation(4, 6),
+        'operation { %s } delay: 7  delay_offset: 0' % gen_operation(7, 13),
+        'operation { %s } delay: 10  delay_offset: 0' % gen_operation(10, 12),
+        'operation { %s } delay: 15  delay_offset: 0' % gen_operation(30, 15),
+    ]
+    expression = delay_model_pb2.DelayExpression()
+    expression.bin_op = delay_model_pb2.DelayExpression.BinaryOperation.MIN
+    expression.lhs_expression.factor.source = \
+        delay_model_pb2.DelayFactor.Source.RESULT_BIT_COUNT 
+    expression.rhs_expression.factor.source = \
+        delay_model_pb2.DelayFactor.Source.OPERAND_BIT_COUNT 
+    expression.rhs_expression.factor.operand_number = 1
+
+    foo = delay_model.RegressionEstimator(
+        'kFoo', (expression,),
+        tuple(_parse_data_point(s) for s in data_points_str))
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(15, 15))),
+        15,
+        delta=1)
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(45, 20))),
+        20,
+        delta=1)
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(20, 45))),
+        20,
+        delta=1)
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(10, 25))),
+        10,
+        delta=1)
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(100, 250))),
+        100,
+        delta=1)
+
+    expression_str = r"""std::min(static_cast<float>(node->GetType()->GetFlatBitCount()),
+        static_cast<float>(node->operand(1)->GetType()->GetFlatBitCount()))"""
+    self.assertEqualIgnoringWhitespaceAndFloats(
+        foo.cpp_delay_code('node'), r"""
+          return std::round(
+              0.0 + 0.0 * {} +
+              0.0 * std::log2({}));
+        """.format(expression_str, expression_str))
+
+  def test_regression_estimator_binop_delay_expression_multiply(self):
+    def gen_operation(result_bit_count, operand_bit_count):
+      return 'op: "kFoo" bit_count: %d operands { } operands { bit_count: %d }' % (
+          result_bit_count, operand_bit_count)
+
+    data_points_str = [
+        'operation { %s } delay: 2   delay_offset: 0' % gen_operation(1, 2),
+        'operation { %s } delay: 4   delay_offset: 0' % gen_operation(4, 1),
+        'operation { %s } delay: 24  delay_offset: 0' % gen_operation(4, 6),
+        'operation { %s } delay: 91  delay_offset: 0' % gen_operation(7, 13),
+        'operation { %s } delay: 120 delay_offset: 0' % gen_operation(10, 12),
+        'operation { %s } delay: 450 delay_offset: 0' % gen_operation(30, 15),
+    ]
+    expression = delay_model_pb2.DelayExpression()
+    expression.bin_op = delay_model_pb2.DelayExpression.BinaryOperation.MULTIPLY
+    expression.lhs_expression.factor.source = \
+        delay_model_pb2.DelayFactor.Source.RESULT_BIT_COUNT 
+    expression.rhs_expression.factor.source = \
+        delay_model_pb2.DelayFactor.Source.OPERAND_BIT_COUNT 
+    expression.rhs_expression.factor.operand_number = 1
+
+    foo = delay_model.RegressionEstimator(
+        'kFoo', (expression,),
+        tuple(_parse_data_point(s) for s in data_points_str))
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(15, 15))),
+        225,
+        delta=1)
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(45, 20))),
+        900,
+        delta=1)
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(20, 45))),
+        900,
+        delta=1)
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(10, 25))),
+        250,
+        delta=1)
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(2, 8))),
+        16,
+        delta=1)
+
+    expression_str = r"""(static_cast<float>(node->GetType()->GetFlatBitCount())
+        * static_cast<float>(node->operand(1)->GetType()->GetFlatBitCount()))"""
+    self.assertEqualIgnoringWhitespaceAndFloats(
+        foo.cpp_delay_code('node'), r"""
+          return std::round(
+              0.0 + 0.0 * {} +
+              0.0 * std::log2({}));
+        """.format(expression_str, expression_str))
+
+  def test_regression_estimator_constant_delay_expression(self):
+    def gen_operation(result_bit_count, operand_bit_count):
+      return 'op: "kFoo" bit_count: %d operands { } operands { bit_count: %d }' % (
+          result_bit_count, operand_bit_count)
+
+    data_points_str = [
+        'operation { %s } delay: 99  delay_offset: 0' % gen_operation(1, 2),
+        'operation { %s } delay: 99  delay_offset: 0' % gen_operation(4, 1),
+        'operation { %s } delay: 99  delay_offset: 0' % gen_operation(4, 6),
+        'operation { %s } delay: 99  delay_offset: 0' % gen_operation(7, 13),
+        'operation { %s } delay: 99  delay_offset: 0' % gen_operation(10, 12),
+        'operation { %s } delay: 99  delay_offset: 0' % gen_operation(30, 15),
+    ]
+    expression = delay_model_pb2.DelayExpression()
+    expression.constant = 99
+
+    # Not especially usuful tests since regression includes a
+    # constant variable that could mask issues...
+    foo = delay_model.RegressionEstimator(
+        'kFoo', (expression,),
+        tuple(_parse_data_point(s) for s in data_points_str))
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(15, 15))),
+        99,
+        delta=1)
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(45, 20))),
+        99,
+        delta=1)
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(20, 45))),
+        99,
+        delta=1)
+
+    # This test is useful though!
+    expression_str = r"""static_cast<float>(99)"""
+    self.assertEqualIgnoringWhitespaceAndFloats(
+        foo.cpp_delay_code('node'), r"""
+          return std::round(
+              0.0 + 0.0 * {} +
+              0.0 * std::log2({}));
+        """.format(expression_str, expression_str))
+
+  def test_regression_estimator_nested_delay_expression(self):
+    def gen_operation(result_bit_count, operand_bit_count):
+      return 'op: "kFoo" bit_count: %d operands { } operands { bit_count: %d }' % (
+          result_bit_count, operand_bit_count)
+
+    data_points_str = [
+        'operation { %s } delay: 3   delay_offset: 0' % gen_operation(1, 2),
+        'operation { %s } delay: 5   delay_offset: 0' % gen_operation(4, 1),
+        'operation { %s } delay: 10  delay_offset: 0' % gen_operation(4, 6),
+        'operation { %s } delay: 20  delay_offset: 0' % gen_operation(7, 13),
+        'operation { %s } delay: 20  delay_offset: 0' % gen_operation(10, 12),
+        'operation { %s } delay: 20  delay_offset: 0' % gen_operation(30, 15),
+    ]
+    # min(1, RESULT_BIT_COUNT + OPERAND_BIT_COUNT)
+    expression = delay_model_pb2.DelayExpression()
+    expression.bin_op = delay_model_pb2.DelayExpression.BinaryOperation.MIN
+    expression.lhs_expression.constant = 20
+    expression.rhs_expression.bin_op = delay_model_pb2.DelayExpression.BinaryOperation.ADD
+    expression.rhs_expression.lhs_expression.factor.source = \
+        delay_model_pb2.DelayFactor.Source.RESULT_BIT_COUNT 
+    expression.rhs_expression.rhs_expression.factor.source = \
+        delay_model_pb2.DelayFactor.Source.OPERAND_BIT_COUNT 
+    expression.rhs_expression.rhs_expression.factor.operand_number = 1
+
+    foo = delay_model.RegressionEstimator(
+        'kFoo', (expression,),
+        tuple(_parse_data_point(s) for s in data_points_str))
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(15, 15))),
+        20,
+        delta=1)
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(45, 20))),
+        20,
+        delta=1)
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(5, 5))),
+        10,
+        delta=1)
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(1, 15))),
+        16,
+        delta=1)
+    self.assertAlmostEqual(
+        foo.operation_delay(_parse_operation(gen_operation(6, 3))),
+        9,
+        delta=1)
+
+    expression_str = r"""std::min(static_cast<float>(20), 
+        (static_cast<float>(node->GetType()->GetFlatBitCount()) +
+        static_cast<float>(node->operand(1)->GetType()->GetFlatBitCount())))"""
+    self.assertEqualIgnoringWhitespaceAndFloats(
+        foo.cpp_delay_code('node'), r"""
+          return std::round(
+              0.0 + 0.0 * {} +
+              0.0 * std::log2({}));
+        """.format(expression_str, expression_str))
+
+
   def test_regression_op_model_with_bounding_box_specialization(self):
 
     def gen_data_point(bit_count, delay, specialization=''):
@@ -297,7 +617,7 @@ class DelayModelTest(absltest.TestCase):
 
     op_model = delay_model.OpModel(
         text_format.Parse(
-            'op: "kFoo" estimator { regression { factors { source: RESULT_BIT_COUNT } } }'
+            'op: "kFoo" estimator { regression { expressions { factor { source: RESULT_BIT_COUNT } } } }'
             'specializations { kind: OPERANDS_IDENTICAL '
             'estimator { bounding_box { factors { source: RESULT_BIT_COUNT } } } }',
             delay_model_pb2.OpModel()),
@@ -318,8 +638,8 @@ class DelayModelTest(absltest.TestCase):
                 node->ToStringWithOperandTypes());
             }
             return std::round(
-                0.0 + 0.0 * node->GetType()->GetFlatBitCount() +
-                0.0 * std::log2(node->GetType()->GetFlatBitCount()));
+                0.0 + 0.0 * static_cast<float>(node->GetType()->GetFlatBitCount()) +
+                0.0 * std::log2(static_cast<float>(node->GetType()->GetFlatBitCount())));
           }
         """)
 

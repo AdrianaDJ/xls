@@ -109,10 +109,41 @@ message DelayFactor {
   int64 operand_number = 2;
 }
 
+// Describes a nested mathematical expression combining delay factors (and possibly
+// constants). Useful when data for an op cannot be described by a linear
+// combination of individual delay factors.
+message DelayExpression {
+  // The expression is binary op combining
+  // two subexpressions.
+  enum BinaryOperation {
+    ADD = 0;
+    DIVIDE = 1;
+    MIN = 2;
+    MULTIPLY = 3;
+  }
+
+  // An expression can be either a BinaryOperation,
+  // a DelayFactor, or a int.
+  oneof expression_type {
+    BinaryOperation bin_op = 1;
+
+    // The expression is simply a delay factor.
+    DelayFactor factor = 2;
+
+    // The expression is a constant.
+    int64 constant = 3;
+  }
+
+  // Left and right hand side expressions combined by the BinaryOperation,
+  // if present.
+  DelayExpression lhs_expression = 4;
+  DelayExpression rhs_expression = 5;
+}
+
 // Describes a delay estimation model which fits a curve to the measured data
 // points for the operation. The function (curve) includes a constant term and
-// terms which are linear and logarithm functions of the indicated factors. For
-// example, if the factors are the result bit count and the operand count then
+// terms which are linear and logarithm functions of the indicated expressions. For
+// example, if the expressoins are the result bit count and the operand count then
 // the function for the estimated delay has the form:
 //
 //   delay_est = P_0 + P_1 * result_bit_count + P_2 * log2(result_bit_count) +
@@ -120,11 +151,11 @@ message DelayFactor {
 //
 // Where P_i are learned parameters.
 message RegressionEstimator {
-  repeated DelayFactor factors = 1;
+  repeated DelayExpression expressions = 1;
 }
 
 // Describes a delay estimation model in which the measured data points define
-// bounding boxes in the space of delay factors. The estimated delay for an
+// bounding boxes in the space of delay expressions. The estimated delay for an
 // operation X is equal to the delay of the first bounding box containing the
 // point defined by the operation. For example, suppose the factors of a
 // bounding box estimator are the result bit count and the operand count, and
